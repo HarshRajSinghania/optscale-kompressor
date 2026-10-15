@@ -17,15 +17,20 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use blake2::Blake2bVar;
-use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2b;
+use blake2::Digest;
+use blake2::digest::consts::U9;
 use std::collections::HashSet;
 use std::fmt;
 
 /// Every handle reads `k_` + [`HANDLE_WIDTH`] url-safe characters.
 pub const REF_PREFIX: &str = "k_";
-/// 9 digest bytes encode to exactly 12 base64 characters with no padding.
-const DIGEST_SIZE: usize = 9;
+/// The digest width, as a type: blake2 0.11 takes it as a const generic rather
+/// than a runtime argument. Nine bytes encode to exactly twelve base64
+/// characters with no padding, which is [`HANDLE_WIDTH`] — change one and the
+/// other stops being true, so `a_handle_is_twelve_url_safe_characters` checks
+/// the pair rather than either alone.
+type DigestWidth = U9;
 pub const HANDLE_WIDTH: usize = 12;
 
 /// A fragment handle, stored without its `k_` prefix.
@@ -80,12 +85,12 @@ fn is_handle_byte(b: u8) -> bool {
 /// The digest length is a BLAKE2 parameter rather than a truncation, so this
 /// is `blake2b(data, digest_size=9)`, base64url with no padding.
 pub fn ref_for(fragment: &str) -> RefId {
-    let mut hasher = Blake2bVar::new(DIGEST_SIZE).expect("9 is a valid blake2b digest size");
+    // blake2 0.11 replaced the runtime-sized `Blake2bVar` with a const-generic
+    // width. Same function, same bytes: the digest length is a BLAKE2
+    // parameter either way, so `Blake2b::<U9>` is `blake2b(data, 9)`.
+    let mut hasher = Blake2b::<DigestWidth>::new();
     hasher.update(fragment.as_bytes());
-    let mut digest = [0u8; DIGEST_SIZE];
-    hasher
-        .finalize_variable(&mut digest)
-        .expect("output buffer matches the configured digest size");
+    let digest = hasher.finalize();
     let mut encoded = [0u8; HANDLE_WIDTH];
     let written = URL_SAFE_NO_PAD
         .encode_slice(digest, &mut encoded)

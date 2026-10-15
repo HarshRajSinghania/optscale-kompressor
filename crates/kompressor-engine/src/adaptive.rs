@@ -14,8 +14,9 @@
 
 use std::collections::HashSet;
 
-use blake2::Blake2bVar;
-use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2b;
+use blake2::Digest;
+use blake2::digest::consts::U8;
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use once_cell::sync::Lazy;
@@ -41,11 +42,9 @@ pub fn simhash(text: &str) -> u64 {
         toks.iter().map(|s| s.as_str()).collect()
     };
     for token in iter {
-        let mut hasher = Blake2bVar::new(8).expect("8 is a valid digest size");
+        let mut hasher = Blake2b::<U8>::new();
         hasher.update(token.as_bytes());
-        let mut digest = [0u8; 8];
-        hasher.finalize_variable(&mut digest).expect("8 bytes out");
-        let value = u64::from_be_bytes(digest);
+        let value = u64::from_be_bytes(hasher.finalize().into());
         for (bit, slot) in bits.iter_mut().enumerate() {
             *slot += if value & (1u64 << bit) != 0 { 1 } else { -1 };
         }
@@ -147,11 +146,9 @@ pub fn adaptive_k(items: &[&str], minimum: usize, maximum: usize, bias: f32) -> 
 }
 
 fn hash_token(token: &str) -> u64 {
-    let mut hasher = Blake2bVar::new(8).expect("8 is a valid digest size");
+    let mut hasher = Blake2b::<U8>::new();
     hasher.update(token.as_bytes());
-    let mut digest = [0u8; 8];
-    hasher.finalize_variable(&mut digest).expect("8 bytes out");
-    u64::from_be_bytes(digest)
+    u64::from_be_bytes(hasher.finalize().into())
 }
 
 fn deflated_len(text: &str) -> usize {
