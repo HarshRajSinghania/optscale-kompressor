@@ -1,0 +1,32 @@
+[package]
+name = "kompressor-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OptScale Kompressor as an MCP server: the compress and retrieve operations as tools an agent runtime can call."
+
+[dependencies]
+kompressor-core = { path = "../kompressor-core" }
+kompressor-engine = { path = "../kompressor-engine" }
+kompressor-stats = { path = "../kompressor-stats" }
+kompressor-store = { path = "../kompressor-store" }
+
+rmcp = { version = "3.3.0", features = ["server", "macros", "transport-streamable-http-server", "transport-io"] }
+schemars = "1"
+
+axum = { workspace = true }
+http = { workspace = true }
+tokio = { workspace = true }
+tower-service = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+tempfile = "3"

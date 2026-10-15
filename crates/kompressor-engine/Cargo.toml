@@ -1,0 +1,55 @@
+[package]
+name = "kompressor-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OptScale Kompressor engine: deterministic prompt compression — content detection, per-type compressors, CCR fragment handles."
+
+[features]
+default = ["code-aware"]
+# Statically linked tree-sitter grammars for the source-code compressor.
+# Without it `crush_code` declines every payload and the engine falls open,
+# which is the intended degradation rather than a build error.
+code-aware = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-java",
+    "dep:tree-sitter-c-sharp",
+    "dep:tree-sitter-c",
+    "dep:tree-sitter-cpp",
+]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+memchr = { workspace = true }
+blake2 = { workspace = true }
+base64 = { workspace = true }
+flate2 = { workspace = true }
+csv = { workspace = true }
+once_cell = { workspace = true }
+tracing = { workspace = true }
+
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-java = { workspace = true, optional = true }
+tree-sitter-c-sharp = { workspace = true, optional = true }
+tree-sitter-c = { workspace = true, optional = true }
+tree-sitter-cpp = { workspace = true, optional = true }
+
+[dev-dependencies]
+# the golden-vector test reads gzipped recorded vectors
+flate2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

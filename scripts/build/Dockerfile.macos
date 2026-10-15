@@ -1,0 +1,72 @@
+# A builder image that produces a macOS .pkg without a Mac.
+#
+#   docker build -f scripts/build/Dockerfile.macos -t kompressor-macos-builder .
+#   docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/src" kompressor-macos-builder
+#
+# Or `make macos-pkg-docker`, which does both.
+#
+# Why an image at all: the four things this needs — a Darwin-capable linker,
+# xar, mkbom and a Rust toolchain with the Apple targets — are each a small
+# yak, and three of them are not packaged by any mainstream distribution. Built
+# once here, the host needs nothing but Docker and the result is the same on a
+# laptop and on CI.
+#
+# Nothing Apple-proprietary is used or required. zig supplies macOS libc stubs
+# so linking works without Apple's SDK; `xar` and `mkbom` are open source
+# reimplementations of the container formats a .pkg is made of.
+FROM rust:1.90-bookworm
+
+# Pinned so an image rebuilt in six months produces the same artifact. zig is
+# the one with a real floor: cargo-zigbuild refuses anything below 0.9, and
+# Debian ships 0.6.
+ARG ZIG_VERSION=0.16.0
+ARG CARGO_ZIGBUILD_VERSION=0.23.4
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential autoconf automake libtool pkg-config git \
+        libxml2-dev libssl-dev zlib1g-dev cpio python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# zig, via its Python distribution — the simplest way to pin a version without
+# guessing a tarball URL per architecture. The shim is what cargo-zigbuild
+# looks for: it searches PATH for an executable called `zig`.
+RUN python3 -m venv /opt/zigenv \
+    && /opt/zigenv/bin/pip install --no-cache-dir "ziglang==${ZIG_VERSION}" \
+    && printf '#!/bin/sh\nexec /opt/zigenv/bin/python -m ziglang "$@"\n' > /usr/local/bin/zig \
+    && chmod 755 /usr/local/bin/zig \
+    && zig version
+
+# bomutils gives `mkbom`, which writes the binary file list a .pkg carries.
+RUN git clone --depth 1 https://github.com/hogliux/bomutils /tmp/bomutils \
+    && make -C /tmp/bomutils -j"$(nproc)" \
+    && install -m 755 /tmp/bomutils/build/bin/mkbom /usr/local/bin/mkbom \
+    && rm -rf /tmp/bomutils
+
+# xar is the archive format a .pkg actually is. Its configure probes for
+# `OpenSSL_add_all_ciphers`, which OpenSSL 3 removed, so the check fails on any
+# current distribution even though the build is fine — hence the cache
+# override rather than a patch.
+RUN git clone --depth 1 https://github.com/mackyle/xar /tmp/xar \
+    && cd /tmp/xar/xar \
+    && ac_cv_lib_crypto_OpenSSL_add_all_ciphers=yes ./autogen.sh --prefix=/usr/local \
+    && make -j"$(nproc)" && make install && ldconfig \
+    && cd / && rm -rf /tmp/xar
+
+RUN cargo install --locked "cargo-zigbuild@${CARGO_ZIGBUILD_VERSION}" \
+    && rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# Writable by any uid, so the container can run as the invoking user and leave
+# host-owned files behind instead of root-owned ones.
+#
+# HOME and XDG_CACHE_HOME matter as much as CARGO_HOME: run with `-u` and no
+# HOME, the uid has no passwd entry, HOME falls back to `/`, and cargo-zigbuild
+# fails with `failed to create directory /.cache/cargo-zigbuild: Permission
+# denied` — a mile from the actual cause.
+ENV CARGO_HOME=/tmp/cargo \
+    XDG_CACHE_HOME=/tmp/.cache \
+    HOME=/tmp
+RUN mkdir -p /tmp/cargo /tmp/.cache && chmod 1777 /tmp /tmp/cargo /tmp/.cache
+
+WORKDIR /src
+ENV MACOS_ARCH=universal2
+CMD ["sh", "-c", "exec ./scripts/build/macos-pkg.sh \"$MACOS_ARCH\""]

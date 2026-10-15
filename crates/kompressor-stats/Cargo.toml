@@ -1,0 +1,24 @@
+[package]
+name = "kompressor-stats"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OptScale Kompressor analytics: an append-only event store in SQLite, written off the request path, and the queries that turn it into an honest savings report."
+
+[dependencies]
+kompressor-engine = { path = "../kompressor-engine" }
+
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+humantime-serde = { workspace = true }
+
+[dev-dependencies]
+# every test writes a real database: the CHECK constraints, json_each and the
+# view definitions are most of what is under test, and an in-memory fake would
+# test none of them.
+tempfile = "3"

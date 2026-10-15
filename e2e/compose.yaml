@@ -1,0 +1,71 @@
+# The end-to-end suite: a provider, a kompressor, and something that drives them.
+#
+# `internal: true` on the network is the hermetic part. Nothing in here can
+# reach a real provider even if a URL were wrong, so a green run cannot be
+# green because it quietly talked to the internet. The image build needs
+# crates.io; the run needs nothing.
+
+# A project name of its own: the default is the directory, which is `e2e` here
+# and collides with every other `e2e/` stack on the same machine.
+name: kompressor-e2e
+
+services:
+  provider:
+    build:
+      context: .
+      dockerfile: Dockerfile.harness
+    command: ["python3", "/app/provider/mock_provider.py"]
+    networks: [kompressor-e2e]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/_health',timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kompressor:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile.kompressor
+    command:
+      - serve
+      - --api
+      - --proxy
+      - --mcp
+      - --listen
+      - 0.0.0.0:8817
+      - --config
+      - /etc/kompressor/kompressor.toml
+    networks: [kompressor-e2e]
+    depends_on:
+      provider:
+        condition: service_healthy
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "/kompressor", "check-config", "--config", "/etc/kompressor/kompressor.toml"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.harness
+    command: ["python3", "/app/runner/run_e2e.py"]
+    networks: [kompressor-e2e]
+    depends_on:
+      kompressor:
+        condition: service_started
+      provider:
+        condition: service_healthy
+    environment:
+      KOMPRESSOR_API: http://kompressor:8817
+      KOMPRESSOR_PROXY: http://kompressor:8817
+      PROVIDER: http://provider:8080
+      CORPUS: /corpus/corpus.jsonl.gz
+    volumes:
+      - ../fixtures:/corpus:ro
+
+networks:
+  kompressor-e2e:
+    internal: true

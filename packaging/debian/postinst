@@ -1,0 +1,41 @@
+#!/bin/sh
+# The service account. A system user with no login shell and no home: the
+# daemon reads /etc/kompressor/config.toml and writes /var/lib/kompressor,
+# both of which systemd arranges, so it needs nothing of its own.
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent group kompressor >/dev/null; then
+        addgroup --system kompressor
+    fi
+    if ! getent passwd kompressor >/dev/null; then
+        adduser --system --no-create-home --ingroup kompressor \
+                --home /var/lib/kompressor --shell /usr/sbin/nologin kompressor
+    fi
+    # World-readable, deliberately. The shipped config carries no credential:
+    # every upstream uses `forward_auth = true`, so the caller's own key is
+    # passed through and nothing is stored here. Operators need to read it to
+    # see where traffic goes, and a 0640 root:kompressor file means `cat` fails
+    # for everyone who is not in that group — which is everyone, since the
+    # service account is the only member.
+    #
+    # If you add a secret to this file (an `[auth]` token, or an upstream key
+    # with forward_auth = false), tighten it again:
+    #   chown root:kompressor /etc/kompressor/config.toml && chmod 0640 ...
+    if [ -f /etc/kompressor/config.toml ]; then
+        chown root:root /etc/kompressor/config.toml
+        chmod 0644 /etc/kompressor/config.toml
+    fi
+    # The unit's UMask only governs files created from now on, so an upgrade
+    # from a build that shipped 0077 would leave its existing databases
+    # unreadable and the change would look like it had not worked.
+    if [ -d /var/lib/kompressor ]; then
+        chmod 0755 /var/lib/kompressor
+        find /var/lib/kompressor -maxdepth 1 -type f -name '*.db*' \
+             -exec chmod 0644 {} + 2>/dev/null || true
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0

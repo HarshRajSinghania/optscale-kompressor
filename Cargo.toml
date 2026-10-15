@@ -1,0 +1,78 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.2"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/hystax/optscale-kompressor"
+
+[workspace.dependencies]
+# --- engine ---
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps object key order; arbitrary_precision keeps
+# numeric literals byte-exact, so a JSON round-trip cannot silently rewrite 1e5.
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+regex = "1"
+memchr = "2"
+blake2 = "0.10"
+base64 = "0.22"
+flate2 = "1"
+# Request-body decoding. codex sends `content-encoding: zstd` on every request
+# (measured on 0.155.1), and a body the proxy cannot parse is a body it cannot
+# compress — so this is the difference between working and silently not.
+zstd = { version = "0.13", default-features = false }
+csv = "1"
+tree-sitter = "0.25"
+tree-sitter-python = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+
+# --- runtime / server ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "net", "io-util", "process"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout", "request-id", "util"] }
+hyper = "1"
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+futures = "0.3"
+futures-util = "0.3"
+# Upstream half of the websocket relay. `rustls-tls-webpki-roots` deliberately
+# matches reqwest's `rustls-tls` above: a second TLS stack in one binary is a
+# second set of roots to keep current and a second place a handshake can fail.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "stream", "json"] }
+url = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+
+# --- storage ---
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# --- cli / config ---
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.9"
+humantime-serde = "1"
+
+# --- misc ---
+anyhow = "1"
+thiserror = "2"
+once_cell = "1"
+parking_lot = "0.12"
+rand = "0.9"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"       # the engine relies on catch_unwind to fail open

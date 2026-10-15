@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  A LaunchAgent, not a LaunchDaemon. The proxy serves the agents running in
+  this login session and writes under the user's own home, so it belongs to
+  the user rather than to the machine — the same decision as the systemd user
+  service on Linux. A LaunchDaemon would run as root before anyone logs in and
+  would have no business reading ~/.config.
+
+  Installed to ~/Library/LaunchAgents/com.kompressor.proxy.plist by the
+  package's postinstall, which also substitutes the real home directory: launchd
+  does not expand ~ or $HOME inside these values.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kompressor.proxy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/kompressor</string>
+        <string>serve</string>
+        <string>--proxy</string>
+        <string>--api</string>
+        <!-- Explicit, because the loader searches KOMPRESSOR_CONFIG, then
+             ./kompressor.toml, then XDG — and launchd gives a job no working
+             directory worth relying on. -->
+        <string>--config</string>
+        <string>@CONFIG@</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart on failure but not on a clean exit, and never faster than once
+         every 10 seconds: a proxy whose port is already taken fails instantly,
+         and the default would spin on it. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>@LOGS@/kompressor.log</string>
+    <key>StandardErrorPath</key>
+    <string>@LOGS@/kompressor.log</string>
+</dict>
+</plist>

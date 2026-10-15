@@ -1,0 +1,37 @@
+# kompressor, built from this tree rather than from a published image, so the
+# suite tests the working copy.
+#
+# Two stages because the build needs a Rust toolchain and a C compiler (the
+# tree-sitter grammars are C) and the runtime needs neither. The builder layer
+# The registry and target directories are cache mounts, so an edit to one
+# crate recompiles that crate rather than the whole dependency tree.
+FROM rust:1-bookworm AS build
+WORKDIR /src
+# No extra toolchain: the base image already has gcc, which is what the `cc`
+# crate drives for the tree-sitter grammars and for bundled SQLite. Installing
+# clang here cost two minutes of every cold build and bought nothing.
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+# Cache mounts rather than a layer: any edit under `crates/` invalidates the
+# COPY above, and without these that means recompiling the whole dependency
+# tree — nine tree-sitter grammars, bundled SQLite, rustls — on every run. The
+# binary is copied out inside the same RUN because a cache mount is not part
+# of the resulting layer.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/src/target,sharing=locked \
+    cargo build --release -p kompressor-cli \
+ && cp /src/target/release/kompressor /usr/local/bin/kompressor
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /usr/local/bin/kompressor /kompressor
+COPY e2e/kompressor.toml /etc/kompressor/kompressor.toml
+# The fragment store and the statistics live here. Compose mounts a tmpfs over
+# it so every run starts with an empty store — a suite that asserts "this
+# handle resolves" must not be able to pass on a handle a previous run left
+# behind.
+RUN mkdir -p /data
+EXPOSE 8817
+ENTRYPOINT ["/kompressor"]

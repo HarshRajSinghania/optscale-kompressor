@@ -1,0 +1,46 @@
+[package]
+name = "kompressor-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OptScale Kompressor as a transparent LLM reverse proxy: compresses a completion on its way to the provider, offers the model a way back to what was elided, and executes that way back itself — on streamed responses as well as buffered ones."
+
+[features]
+default = ["code-aware"]
+code-aware = ["kompressor-core/code-aware"]
+
+[dependencies]
+kompressor-core = { path = "../kompressor-core", default-features = false }
+kompressor-engine = { path = "../kompressor-engine", default-features = false }
+kompressor-stats = { path = "../kompressor-stats" }
+kompressor-wire = { path = "../kompressor-wire" }
+
+axum = { workspace = true }
+bytes = { workspace = true }
+flate2 = { workspace = true }
+futures-util = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+# The ref store is only needed to stand a core up in tests; the proxy itself
+# reaches the store through `AppCore` and never names a backend.
+kompressor-store = { path = "../kompressor-store" }
+
+http-body-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tower = { workspace = true, features = ["util"] }
+# A real HTTP upstream rather than a stubbed client: the header policy, the
+# re-sent rounds of the retrieve loop and the SSE relay are all observable only
+# from the other side of a socket.
+wiremock = "0.6"
+tempfile = "3"

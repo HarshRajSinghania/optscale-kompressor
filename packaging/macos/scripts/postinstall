@@ -1,0 +1,60 @@
+#!/bin/sh
+# Runs as root after the payload is in place.
+#
+# The payload is machine-wide (/usr/local/bin and a template under
+# /usr/local/share), but the service is per-user: a LaunchAgent in the
+# console user's home, for the same reason the Linux package ships a *user*
+# unit — the proxy serves the agents in a login session and reads that user's
+# config.
+#
+# Everything here is idempotent, because a .pkg can be installed over itself.
+set -e
+
+PREFIX=/usr/local
+SHARE="$PREFIX/share/kompressor"
+LABEL=com.kompressor.proxy
+
+# `$USER` is root during an install, and `$HOME` is not reliably the target
+# user's. The console owner is who is actually logged in.
+CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null || echo root)
+if [ "$CONSOLE_USER" = "root" ] || [ -z "$CONSOLE_USER" ]; then
+    echo "kompressor: no console user; binary installed, service not loaded."
+    echo "kompressor: run $SHARE/install-agent.sh as yourself to finish."
+    exit 0
+fi
+USER_HOME=$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
+[ -n "$USER_HOME" ] || USER_HOME="/Users/$CONSOLE_USER"
+USER_UID=$(id -u "$CONSOLE_USER")
+
+CONF_DIR="$USER_HOME/.config/kompressor"
+STATE="$USER_HOME/Library/Application Support/kompressor"
+LOGS="$USER_HOME/Library/Logs"
+AGENTS="$USER_HOME/Library/LaunchAgents"
+CONF="$CONF_DIR/config.toml"
+PLIST="$AGENTS/$LABEL.plist"
+
+install -d -o "$CONSOLE_USER" "$CONF_DIR" "$STATE" "$LOGS" "$AGENTS"
+
+# Never clobber an existing config: it is where a changed mount or an upstream
+# key lives, and a reinstall is not a reason to lose it.
+if [ ! -f "$CONF" ]; then
+    sed "s|@STATE@|$STATE|g" "$SHARE/config.toml.in" > "$CONF"
+    chown "$CONSOLE_USER" "$CONF"
+    chmod 600 "$CONF"
+fi
+
+# launchd expands neither ~ nor $HOME inside a plist, so the real paths are
+# substituted here, at install time.
+sed -e "s|@CONFIG@|$CONF|g" -e "s|@LOGS@|$LOGS|g" "$SHARE/$LABEL.plist.in" > "$PLIST"
+chown "$CONSOLE_USER" "$PLIST"
+chmod 644 "$PLIST"
+
+# Reload rather than load: `bootstrap` fails if the label is already known, and
+# an upgrade must not leave the old binary running.
+launchctl bootout "gui/$USER_UID/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$USER_UID" "$PLIST" 2>/dev/null || \
+    su - "$CONSOLE_USER" -c "launchctl load -w '$PLIST'" 2>/dev/null || \
+    echo "kompressor: could not load the agent; run: launchctl bootstrap gui/$USER_UID '$PLIST'"
+
+echo "kompressor: installed. config $CONF, logs $LOGS/kompressor.log"
+exit 0
