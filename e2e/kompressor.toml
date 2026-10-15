@@ -1,0 +1,47 @@
+# The configuration under test.
+#
+# `max_ref_bytes` is raised above the shipped default on purpose: at 64 KiB a
+# large fragment is elided with no handle, and this suite asserts that
+# recoverable mode retains what it drops. The default is a separate argument;
+# see the README's gap list.
+[server]
+listen = "0.0.0.0:8817"
+
+[engine]
+mode = "recoverable"
+max_ref_bytes = 4194304
+
+[refs]
+backend = "sqlite"
+path = "/data/refs.db"
+
+[stats]
+enabled = true
+path = "/data/stats.db"
+
+[log]
+level = "warn"
+
+[proxy]
+allow_insecure_upstream = true
+
+[[proxy.upstreams]]
+name = "anthropic"
+path_prefix = "/v1/messages"
+base_url = "http://provider:8080"
+api_family = "anthropic"
+forward_auth = true
+
+[[proxy.upstreams]]
+name = "openai"
+path_prefix = "/v1"
+base_url = "http://provider:8080"
+api_family = "openai"
+forward_auth = true
+
+# The same mount, for a caller who pays by subscription. In production this is
+# `https://chatgpt.com` with the same prefix; here it is the mock, so the
+# rewrite can be asserted on the path the provider actually recorded.
+[proxy.upstreams.subscription]
+base_url = "http://provider:8080"
+rewrite_prefix = "/backend-api/codex"

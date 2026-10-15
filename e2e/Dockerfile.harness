@@ -1,0 +1,9 @@
+# The provider and the runner: Python, standard library only.
+#
+# No pip install, so the image needs no index and the suite has no dependency
+# that could drift underneath it.
+FROM python:3.12-slim
+WORKDIR /app
+COPY provider /app/provider
+COPY runner /app/runner
+ENV PYTHONUNBUFFERED=1

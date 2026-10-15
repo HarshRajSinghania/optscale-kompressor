@@ -1,0 +1,47 @@
+[Unit]
+Description=kompressor compression proxy (user)
+Documentation=https://github.com/hystax/optscale-kompressor
+After=network-online.target
+Wants=network-online.target
+# Rate limiting lives in [Unit], not [Service]: systemd parses it here and
+# silently ignores it there. A proxy whose port is taken fails instantly and
+# would otherwise restart forever; five failures in a minute stops it and
+# leaves the reason in the journal.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=exec
+# `--config` is explicit because the loader's search path is
+# KOMPRESSOR_CONFIG, then ./kompressor.toml, then XDG — and a service has no
+# meaningful working directory, so relying on discovery would make the config
+# depend on where systemd happened to start it.
+ExecStart=@BIN@ serve --proxy --api --config @CONFIG@
+Restart=on-failure
+RestartSec=3
+
+# The state directory holds the fragment store, so a handle minted before a
+# restart still resolves after one.
+StateDirectory=kompressor
+
+# Hardening. This process talks to loopback and two upstreams and writes two
+# SQLite files; it needs nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@STATE@
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

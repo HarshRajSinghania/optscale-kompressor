@@ -1,0 +1,41 @@
+[package]
+name = "kompressor-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The OptScale Kompressor HTTP compression API: the shared axum state, router and middleware every surface is mounted on."
+
+[features]
+default = ["code-aware"]
+code-aware = ["kompressor-core/code-aware"]
+
+[dependencies]
+kompressor-core = { path = "../kompressor-core", default-features = false }
+kompressor-engine = { path = "../kompressor-engine", default-features = false }
+kompressor-stats = { path = "../kompressor-stats" }
+kompressor-store = { path = "../kompressor-store" }
+
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+# Not in the workspace dependency table: the metrics surface is this crate's
+# alone, and adding it there would make every other crate rebuild on a bump.
+# `default-features = false` drops the exporter's own hyper listener and TLS
+# stack — /metrics is served by our router, so none of it would ever run.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+http-body-util = { workspace = true }
+tempfile = "3"

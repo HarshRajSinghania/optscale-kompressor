@@ -1,0 +1,22 @@
+[package]
+name = "kompressor-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tenant-scoped, TTL-bounded store for OptScale Kompressor CCR fragments: in-memory, SQLite, and a write-through cache."
+
+[dependencies]
+# only `refs::RefId` and `types::Kind` are used: the store holds handles the
+# engine minted and never re-derives or re-interprets them.
+kompressor-engine = { path = "../kompressor-engine" }
+rusqlite = { workspace = true }
+parking_lot = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# the SQLite conformance runs against a real file, not `:memory:`, so the
+# reopen and second-connection guarantees are actually exercised
+tempfile = "3"

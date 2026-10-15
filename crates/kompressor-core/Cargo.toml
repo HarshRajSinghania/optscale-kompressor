@@ -1,0 +1,28 @@
+[package]
+name = "kompressor-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared spine for every OptScale Kompressor surface: configuration, tenant resolution, and the compress/retrieve operations themselves."
+
+[features]
+default = ["code-aware"]
+code-aware = ["kompressor-engine/code-aware"]
+
+[dependencies]
+kompressor-engine = { path = "../kompressor-engine", default-features = false }
+kompressor-store = { path = "../kompressor-store" }
+kompressor-stats = { path = "../kompressor-stats" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+humantime-serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

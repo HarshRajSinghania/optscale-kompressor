@@ -1,0 +1,58 @@
+[Unit]
+Description=kompressor compression proxy
+Documentation=https://github.com/hystax/optscale-kompressor
+After=network-online.target
+Wants=network-online.target
+# Rate limiting lives in [Unit], not [Service]: systemd parses it here and
+# silently ignores it there. A proxy whose port is taken fails instantly and
+# would otherwise restart forever; five failures in a minute stops it and
+# leaves the reason in the journal.
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=exec
+User=kompressor
+Group=kompressor
+# Explicit because /etc is not on the loader's search path: discovery checks
+# KOMPRESSOR_CONFIG, ./kompressor.toml, then XDG, none of which a system
+# service has.
+ExecStart=/usr/bin/kompressor serve --proxy --api --config /etc/kompressor/config.toml
+Restart=on-failure
+RestartSec=3
+
+# /var/lib/kompressor, created and chowned by systemd. The fragment store lives
+# here so a handle minted before a restart still resolves after one.
+#
+# 0755 and UMask=0022 below make both databases world-readable, so a human can
+# run `kompressor stats` against this deployment without sudo. That is a
+# deliberate trade: `refs.db` holds the content the engine elided — source,
+# logs, command output — so on a machine with other local accounts, those
+# accounts can read it. Tighten both to 0750/0027 and add the people who need
+# it to the `kompressor` group if that is not what you want.
+StateDirectory=kompressor
+StateDirectoryMode=0755
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,66 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Runtime state: fragment store, statistics database, and their WAL sidecars.
+# `data/` is the default when no configuration says otherwise, so it appears the
+# first time anyone runs the binary.
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Local configuration, which usually carries an upstream key
+/kompressor.toml
+/config.toml
+*.local.toml
+.env
+.env.*
+
+# Benchmark output: recorded runs and corpora are regenerated, not committed.
+# The corpus and baseline that the tests need are under fixtures/ and are
+# deliberately not ignored.
+#
+# `runs/` is where `scripts/harbor/suite.sh` writes by default
+# (`KOMPRESSOR_RUNS`, falling back to `$ROOT/runs`). The codex sweep and
+# `scripts/smoke.sh` write outside the checkout entirely — `$HOME/.cache` and
+# `mktemp -d` — so neither needs a rule here.
+# Unanchored: a run directory is also written wherever KOMPRESSOR_RUNS points,
+# which is often a sibling of the repo checkout rather than its root.
+runs/
+*.jsonl
+*.jsonl.gz
+!fixtures/*.jsonl
+!fixtures/*.jsonl.gz
+
+# Python tooling. `scripts/` is a package-less pile of executables, so importing
+# one (which the benchmark tooling does) leaves a __pycache__ beside it holding
+# .pyc files named after whatever the script was called at the time — stale and
+# misleading the moment anything is renamed.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Agent tooling state. Serena writes a per-project symbol cache and config here
+# the first time it activates on the repo; its own .gitignore covers only
+# `cache/` and `project.local.yml`, so `project.yml` would otherwise be
+# committed. Nothing in it is needed to build or test — deleting it just makes
+# Serena re-index.
+.serena/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Review output, not part of the project
+findings.md

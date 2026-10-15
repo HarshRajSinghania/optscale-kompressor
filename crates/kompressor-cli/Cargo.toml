@@ -1,0 +1,162 @@
+[package]
+name = "kompressor-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The OptScale Kompressor command line: compress and explain a payload, retrieve a fragment, read the statistics, replay the corpus."
+
+# Packaging. `cargo deb -p kompressor-cli`, or `make deb`.
+#
+# The docs ship with the binary because the configuration reference is the one
+# thing an operator needs at the moment they have no network: it is generated
+# from the schema, so it is the only description of the settings that cannot be
+# out of date.
+[package.metadata.deb]
+name = "kompressor"
+maintainer = "Hystax"
+copyright = "2026, Hystax"
+extended-description = """\
+OptScale Kompressor: deterministic prompt compression for agent traffic. Rewrites tool results, \
+logs and API responses in flight into a shorter view that says what it removed, \
+and keeps every removed fragment behind a handle the model can ask for by name. \
+Runs as a library, a CLI, an HTTP API, an MCP server or a reverse proxy."""
+section = "utils"
+priority = "optional"
+assets = [
+    ["../../target/release/kompressor", "usr/bin/", "755"],
+    ["../../packaging/kompressor.toml", "etc/kompressor/config.toml", "644"],
+    ["../../README.md", "usr/share/doc/kompressor/README.md", "644"],
+    ["../../docs/QUICKSTART.md", "usr/share/doc/kompressor/QUICKSTART.md", "644"],
+    ["../../LICENSE", "usr/share/doc/kompressor/LICENSE", "644"],
+]
+# Marked a conffile so dpkg asks before replacing it on upgrade. This is where
+# a changed upstream mount lives; silently overwriting it would be the kind of
+# loss nobody notices until traffic goes somewhere unexpected.
+conf-files = ["/etc/kompressor/config.toml"]
+# postinst creates the `kompressor` system user and tightens the config's mode;
+# postrm removes both on purge only. cargo-deb splices its own systemd handling
+# in at the `#DEBHELPER#` marker each script carries.
+maintainer-scripts = "../../packaging/debian"
+depends = "$auto, adduser"
+
+# The unit is enabled on install so the proxy comes back after a reboot, and
+# started so `make deb` + `dpkg -i` leaves a working service rather than one
+# more manual step. Both are visible in the install log, and
+# `systemctl disable --now kompressor` undoes them.
+# --- RPM -------------------------------------------------------------------
+# Mirrors the .deb: same binary, same conffile, same unit, same service user.
+# cargo-generate-rpm has no systemd integration of its own, so the scriptlets
+# below do what cargo-deb's `#DEBHELPER#` splice does on the Debian side.
+[package.metadata.generate-rpm]
+name = "kompressor"
+summary = "OptScale Kompressor: deterministic prompt compression for agent traffic"
+license = "MIT"
+assets = [
+    { source = "../../target/release/kompressor", dest = "/usr/bin/kompressor", mode = "755" },
+    # `config = "noreplace"` is the RPM spelling of a dpkg conffile: an upgrade
+    # leaves your edits alone and drops the new default beside them as .rpmnew.
+    { source = "../../packaging/kompressor.toml", dest = "/etc/kompressor/config.toml", mode = "644", config = "noreplace" },
+    { source = "../../packaging/systemd/kompressor.service", dest = "/usr/lib/systemd/system/kompressor.service", mode = "644" },
+    { source = "../../README.md", dest = "/usr/share/doc/kompressor/README.md", mode = "644", doc = true },
+    { source = "../../docs/QUICKSTART.md", dest = "/usr/share/doc/kompressor/QUICKSTART.md", mode = "644", doc = true },
+    { source = "../../LICENSE", dest = "/usr/share/doc/kompressor/LICENSE", mode = "644", doc = true },
+]
+# shadow-utils supplies useradd/groupadd; systemd supplies the macros the
+# scriptlets call. Both are effectively always present, and naming them means
+# the failure is a dependency error rather than a scriptlet crash.
+requires = { shadow-utils = "*", systemd = "*" }
+
+# No `%systemd_post` here: those are rpmbuild SPEC macros, and
+# cargo-generate-rpm copies scriptlets in verbatim rather than running them
+# through rpmbuild's macro expansion. A `%systemd_post` left in would reach
+# /bin/sh at install time as a command of that literal name and do nothing.
+# Plain shell, with the same effects.
+#
+# `$1` is RPM's scriptlet argument: on install it counts the versions that will
+# be present (1 = fresh install, 2+ = upgrade), and on uninstall the versions
+# that will remain (0 = real removal).
+post_install_script = """
+getent group kompressor >/dev/null || groupadd --system kompressor
+getent passwd kompressor >/dev/null || \
+  useradd --system --gid kompressor --no-create-home \
+          --home-dir /var/lib/kompressor --shell /sbin/nologin kompressor
+if [ -d /var/lib/kompressor ]; then
+  chmod 0755 /var/lib/kompressor
+  find /var/lib/kompressor -maxdepth 1 -type f -name '*.db*' -exec chmod 0644 {} + 2>/dev/null || :
+fi
+systemctl daemon-reload >/dev/null 2>&1 || :
+if [ "$1" -eq 1 ]; then
+  systemctl enable --now kompressor.service >/dev/null 2>&1 || :
+else
+  systemctl try-restart kompressor.service >/dev/null 2>&1 || :
+fi
+"""
+
+pre_uninstall_script = """
+if [ "$1" -eq 0 ]; then
+  systemctl --no-reload disable --now kompressor.service >/dev/null 2>&1 || :
+fi
+"""
+
+# State is NOT removed here, deliberately. RPM has no purge/remove distinction
+# — a plain `dnf remove` is `$1 == 0` — so deleting /var/lib/kompressor in this
+# branch would make the ordinary uninstall destroy the fragment store and every
+# statistic, while the equivalent `apt remove` keeps both. Two packages of one
+# project disagreeing about whether uninstalling loses your data is the kind of
+# surprise that is only discovered afterwards. The admin is told how to remove
+# it instead; QUICKSTART §9 has the same commands.
+post_uninstall_script = """
+systemctl daemon-reload >/dev/null 2>&1 || :
+if [ "$1" -eq 0 ]; then
+  echo "kompressor: /var/lib/kompressor and the 'kompressor' user were kept."
+  echo "kompressor: to remove them:  rm -rf /var/lib/kompressor && userdel kompressor && groupdel kompressor"
+fi
+"""
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "../../packaging/systemd"
+unit-name = "kompressor"
+enable = true
+start = true
+restart-after-upgrade = true
+
+[[bin]]
+name = "kompressor"
+path = "src/main.rs"
+
+[features]
+default = ["code-aware"]
+code-aware = [
+    "kompressor-engine/code-aware",
+    "kompressor-core/code-aware",
+    "kompressor-bench/code-aware",
+    "kompressor-proxy/code-aware",
+]
+
+[dependencies]
+kompressor-bench = { path = "../kompressor-bench", default-features = false }
+kompressor-core = { path = "../kompressor-core", default-features = false }
+kompressor-engine = { path = "../kompressor-engine", default-features = false }
+kompressor-stats = { path = "../kompressor-stats" }
+kompressor-store = { path = "../kompressor-store" }
+kompressor-server = { path = "../kompressor-server" }
+kompressor-mcp = { path = "../kompressor-mcp" }
+kompressor-proxy = { path = "../kompressor-proxy", default-features = false }
+
+axum = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+tower = { workspace = true }
+predicates = "3"
+tempfile = "3"

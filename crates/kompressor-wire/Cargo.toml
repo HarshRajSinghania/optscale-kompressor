@@ -1,0 +1,16 @@
+[package]
+name = "kompressor-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OptScale Kompressor provider request-body walkers: map OpenAI Chat, OpenAI Responses and Anthropic Messages bodies onto the engine's message view and write compressed text back in place."
+
+[dependencies]
+kompressor-engine = { path = "../kompressor-engine" }
+# preserve_order + arbitrary_precision are load-bearing here rather than a
+# nicety: a walked body is re-serialized and forwarded to the provider, so
+# reordered keys or a rewritten numeric literal would change bytes we never
+# meant to touch.
+serde_json = { workspace = true }

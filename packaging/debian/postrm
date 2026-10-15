@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+# `purge` removes configuration and state; `remove` leaves both, because an
+# upgrade path runs remove and a fragment store deleted there would strand
+# every handle a live conversation still holds.
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/kompressor
+    rm -rf /etc/kompressor
+    if getent passwd kompressor >/dev/null; then
+        deluser --system kompressor >/dev/null 2>&1 || true
+    fi
+    if getent group kompressor >/dev/null; then
+        delgroup --system kompressor >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0
