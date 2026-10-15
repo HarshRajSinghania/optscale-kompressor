@@ -159,7 +159,11 @@ mod imp {
 
         fn next(&mut self) -> Option<Node<'t>> {
             let node = self.stack.pop()?;
-            for index in (0..node.named_child_count()).rev() {
+            // tree-sitter 0.27 takes a `u32` index while still counting in
+            // `usize`; the cast is on the count so the conversion happens once
+            // rather than per child. A node with more than 4 billion named
+            // children is not a file this ever sees.
+            for index in (0..node.named_child_count() as u32).rev() {
                 if let Some(child) = node.named_child(index) {
                     self.stack.push(child);
                 }
