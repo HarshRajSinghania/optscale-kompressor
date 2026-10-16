@@ -564,13 +564,21 @@ fn fold_templates(
 /// segfault was kept only because CPython prefixes it with `Fatal Python
 /// error:`, which is an accident of that runtime and not a property of crashes.
 ///
+/// The third group is the operational failures a long run actually dies of,
+/// found by probing the vocabulary against real messages: five of eight common
+/// ones were elided with no hint, because `Permission denied`,
+/// `Connection refused`, `Operation timed out` and `No space left on device`
+/// contain none of the words above.
+///
 /// Deliberately absent: a bare `killed`, which is the OOM killer's word but
-/// also ordinary process-management vocabulary. `out of memory` and
-/// `oom-killed` catch the case that matters without claiming every line that
-/// mentions killing something.
+/// also ordinary process-management vocabulary; `not found` and `no such file`,
+/// which are routine in build and strace output; and `timeout`, which is a
+/// configuration key as often as an event — `timed out` is the event.
+/// `out of memory` and `oom-killed` catch the OOM case without claiming every
+/// line that mentions killing something.
 static ERROR: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|critical|segfault|segmentation\s+fault|core\s+dumped|sig(?:segv|abrt|bus|ill|fpe)|double\s+free|stack\s+smashing|out\s+of\s+memory|oom[-_]?kill(?:ed|er)?|terminate\s+called|aborted)\b",
+        r"(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic(?:ked|king)?|exception|critical|segfault|segmentation\s+fault|core\s+dumped|sig(?:segv|abrt|bus|ill|fpe)|double\s+free|stack\s+smashing|out\s+of\s+memory|oom[-_]?kill(?:ed|er)?|terminate\s+called|aborted|permission\s+denied|access\s+denied|operation\s+not\s+permitted|connection\s+(?:refused|reset)|broken\s+pipe|timed\s+out|no\s+space\s+left|disk\s+full|read-only\s+file\s+system|too\s+many\s+open\s+files|address\s+already\s+in\s+use|deadlock)\b",
     )
     .unwrap()
 });
@@ -1611,5 +1619,69 @@ mod tests {
             out.contains("ERROR, ") && out.contains(" WARN]"),
             "the count is supported here and must be reported, got {out:?}"
         );
+    }
+
+    /// Every term the vocabulary claims to recognise, asserted one by one.
+    ///
+    /// This table exists because the alternation was once written across
+    /// several source lines with a trailing `\` on each, which inside a Rust
+    /// *raw* string is a literal backslash and a newline rather than a line
+    /// continuation. Five terms silently came to require a trailing newline and
+    /// matched nothing; the compression gates did not move, because no corpus
+    /// payload contained them. Only naming each term catches that.
+    #[test]
+    fn the_error_vocabulary_recognises_every_term_it_claims() {
+        for line in [
+            "ERROR unable to reach cache node 4",
+            "build failed after 3 retries",
+            "FAILURE: task :app:compile",
+            "Fatal Python error: Segmentation fault",
+            "thread 'main' panicked at src/main.rs:4",
+            "Uncaught exception in handler",
+            "CRITICAL disk controller offline",
+            "Segmentation fault (core dumped)",
+            "segfault at 0 ip 00007f sp 00007f error 4",
+            "Received signal 11 SIGSEGV, address not mapped to object",
+            "SIGABRT received, dumping core",
+            "double free or corruption (out)",
+            "*** stack smashing detected ***",
+            "CUDA out of memory. Tried to allocate 2.00 GiB",
+            "Out of memory: oom-killed process 1234",
+            "terminate called after throwing an instance of 'std::bad_alloc'",
+            "Aborted (core dumped)",
+            "ls: cannot open directory '/srv/x': Permission denied",
+            "mount: /mnt: access denied",
+            "chown: changing ownership: Operation not permitted",
+            "ConnectionRefusedError: [Errno 111] Connection refused",
+            "upstream connection reset by peer",
+            "write: broken pipe",
+            "curl: (28) Operation timed out after 30001 milliseconds",
+            "OSError: [Errno 28] No space left on device",
+            "cannot write checkpoint: disk full",
+            "touch: cannot touch '/x': Read-only file system",
+            "accept: too many open files",
+            "bind: address already in use",
+            "deadlock detected while waiting on lock 7",
+        ] {
+            assert!(
+                ERROR.is_match(line),
+                "the vocabulary must recognise {line:?}"
+            );
+        }
+
+        // …and the words deliberately left out, so a later widening is a
+        // decision rather than an accident.
+        for line in [
+            "Killed",
+            "killed 3 stale workers",
+            "config: timeout=30",
+            "no such file or directory",
+            "W&B: run limit reached, metrics will be dropped",
+        ] {
+            assert!(
+                !ERROR.is_match(line),
+                "{line:?} is deliberately not error vocabulary"
+            );
+        }
     }
 }

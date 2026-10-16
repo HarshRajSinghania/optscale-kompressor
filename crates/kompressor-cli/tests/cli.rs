@@ -844,3 +844,262 @@ fn cli_falls_back_when_fragments_cannot_survive_exit() {
         assert!(compressed["applied"].as_array().unwrap().is_empty());
     }
 }
+
+/// A six-thousand-step training loop, optionally interrupted at step 3000.
+///
+/// The shape matters: every line shares a template with its neighbour and
+/// differs only in a varying tail, which is what makes detection read it as a
+/// uniform stream and hand it to the head-and-tail sampler.
+fn training_log(interruption: &[&str]) -> String {
+    let mut lines: Vec<String> = vec!["Loading dataset /data/train.jsonl".to_string()];
+    for step in 1..=6000 {
+        lines.push(format!(
+            "epoch 1 step {step}/6000 loss=1.8520 lr=0.000300 tok/s=50000"
+        ));
+        if step == 3000 {
+            lines.extend(interruption.iter().map(|line| (*line).to_string()));
+        }
+    }
+    lines.push("Training complete".to_string());
+    lines.join("\n")
+}
+
+/// `compress --json --explain` over a payload, in a directory of its own so the
+/// handles it mints can be fetched back afterwards.
+fn compress_explaining(payload: &str, dir: &Path) -> serde_json::Value {
+    let assert = Command::new(env!("CARGO_BIN_EXE_kompressor"))
+        .env_remove("KOMPRESSOR_CONFIG")
+        .env("XDG_CONFIG_HOME", no_config_dir())
+        .current_dir(dir)
+        .args(["compress", "--json", "--explain"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout).expect("one JSON object")
+}
+
+#[test]
+fn a_crash_buried_in_a_training_log_stays_visible() {
+    // The reported failure: 353KB of training log went to 11 lines — five
+    // steps, a marker, three steps — with `Fatal Python error: Segmentation
+    // fault` inside the fragment. It was retrievable, and nothing in the
+    // output said there was anything worth retrieving.
+    let dir = tempfile::tempdir().unwrap();
+    let value = compress_explaining(
+        &training_log(&[
+            "Fatal Python error: Segmentation fault",
+            "Segmentation fault (core dumped)",
+            "Restarting worker 3 from checkpoint step-2999",
+        ]),
+        dir.path(),
+    );
+
+    let content = value["content"].as_str().unwrap();
+    for line in [
+        "Fatal Python error: Segmentation fault",
+        "Segmentation fault (core dumped)",
+        "Restarting worker 3 from checkpoint step-2999",
+    ] {
+        assert!(
+            content.contains(line),
+            "{line:?} must survive in:\n{content}"
+        );
+    }
+
+    // It is still a uniform stream — the fix routes it, it does not reclassify
+    // it — and the route it took is the one that scores errors.
+    let detection = &value["explain"]["detection"];
+    assert_eq!(detection["uniform_stream"], true);
+    assert_eq!(detection["error_signal"], true);
+    assert_eq!(value["explain"]["strategy"], "log");
+    // and the diversion is visible to analytics, which read `kind`
+    assert_eq!(value["kind"], "log");
+
+    // Keeping the crash costs about a kilobyte out of 353.
+    assert!(
+        value["saved_pct"].as_f64().unwrap() > 99.0,
+        "still compresses hard, got {}",
+        value["saved_pct"]
+    );
+
+    // The routine steps it did elide remain fetchable. `retrieve` truncates a
+    // fragment this size by default, so assert on a line near its head rather
+    // than one in the middle that the cap cuts off.
+    let handle = value["refs"][0]["handle"].as_str().expect("a handle");
+    Command::new(env!("CARGO_BIN_EXE_kompressor"))
+        .env_remove("KOMPRESSOR_CONFIG")
+        .env("XDG_CONFIG_HOME", no_config_dir())
+        .current_dir(dir.path())
+        .args([
+            "retrieve",
+            handle,
+            "--refs",
+            dir.path().join("data/refs.db").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("step 20/6000"));
+}
+
+#[test]
+fn a_native_crash_with_no_python_header_stays_visible() {
+    // `Fatal Python error:` matches on `fatal` and on `error`, so a
+    // CPython-wrapped segfault was always scored. A process that dies under
+    // any other runtime says none of those words.
+    let dir = tempfile::tempdir().unwrap();
+    let value = compress_explaining(
+        &training_log(&[
+            "Segmentation fault (core dumped)",
+            "Received signal 11 SIGSEGV, address not mapped to object",
+            "Restarting worker 3 from checkpoint step-2999",
+        ]),
+        dir.path(),
+    );
+
+    let content = value["content"].as_str().unwrap();
+    assert!(
+        content.contains("Segmentation fault (core dumped)"),
+        "the crash must survive without a Python header:\n{content}"
+    );
+    assert!(content.contains("SIGSEGV"), "and so must the signal line");
+    assert_eq!(value["explain"]["detection"]["error_signal"], true);
+    assert_eq!(value["kind"], "log");
+}
+
+#[test]
+fn a_clean_training_log_still_samples_head_and_tail() {
+    // The other half of the bargain: diverting every uniform stream to the
+    // scored path would cost a clean progress log its ratio for nothing.
+    let dir = tempfile::tempdir().unwrap();
+    let value = compress_explaining(&training_log(&[]), dir.path());
+
+    let detection = &value["explain"]["detection"];
+    assert_eq!(detection["uniform_stream"], true);
+    assert_eq!(detection["error_signal"], false, "nothing went wrong in it");
+    assert_eq!(value["explain"]["strategy"], "listing");
+    assert_eq!(value["kind"], "listing");
+    assert!(
+        value["content"]
+            .as_str()
+            .unwrap()
+            .contains("entries omitted"),
+        "the sampler's marker, not the log path's"
+    );
+    assert!(
+        value["saved_pct"].as_f64().unwrap() > 99.5,
+        "head-and-tail sampling stays as aggressive as it was, got {}",
+        value["saved_pct"]
+    );
+}
+
+#[test]
+fn the_failures_a_long_run_actually_dies_of_all_stay_visible() {
+    // The segfault was one member of a family. Probing the vocabulary against
+    // real messages found five of eight common operational failures elided
+    // with no hint, because `Permission denied`, `Connection refused`,
+    // `Operation timed out` and `No space left on device` carry none of the
+    // words the scorer knew. Each of these is a whole run lost.
+    for failure in [
+        "ls: cannot open directory '/srv/data/shard_0200': Permission denied",
+        "ConnectionRefusedError: [Errno 111] Connection refused",
+        "curl: (28) Operation timed out after 30001 milliseconds",
+        "OSError: [Errno 28] No space left on device",
+        "thread 'main' panicked at src/worker.rs:412",
+        "Aborted (core dumped)",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let value = compress_explaining(&training_log(&[failure]), dir.path());
+        assert!(
+            value["content"].as_str().unwrap().contains(failure),
+            "{failure:?} must survive, got:\n{}",
+            value["content"].as_str().unwrap()
+        );
+        assert!(
+            value["saved_pct"].as_f64().unwrap() > 99.0,
+            "and keeping it must stay nearly free, got {}",
+            value["saved_pct"]
+        );
+    }
+}
+
+/// The payload from the report, line for line.
+///
+/// Reproduced faithfully rather than simplified: the loss decays and `tok/s`
+/// varies per step, so each line differs from its neighbour in three fields
+/// rather than one. That matters — a stream whose lines vary more is a weaker
+/// uniform-stream signal, and a test built on a constant `loss=` would be an
+/// easier payload than the one that was filed.
+///
+/// Python's Mersenne Twister is not reproduced, so the bytes are not identical
+/// to the reporter's; the shape, the field count and the size are.
+fn reported_training_log() -> String {
+    let mut seed: u64 = 3;
+    let mut next = move || {
+        // xorshift64*, so the varying tail is deterministic across runs
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        48_000 + (seed.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) % 4_001
+    };
+    let mut lines: Vec<String> = vec!["Loading dataset /data/train.jsonl".to_string()];
+    let mut loss = 2.5f64;
+    for step in 1..=6000 {
+        loss *= 0.9999;
+        lines.push(format!(
+            "epoch 1 step {step}/6000 loss={loss:.4} lr=0.000300 tok/s={}",
+            next()
+        ));
+        if step == 3000 {
+            lines.push("Fatal Python error: Segmentation fault".to_string());
+            lines.push("Segmentation fault (core dumped)".to_string());
+            lines.push("Restarting worker 3 from checkpoint step-2999".to_string());
+        }
+    }
+    lines.push("Training complete".to_string());
+    lines.join("\n")
+}
+
+#[test]
+fn the_reported_segfault_buried_in_a_training_log_is_no_longer_hidden() {
+    // Reported: 353,063 chars went to 556 — the first five steps, the last
+    // three, and `[... 5995 entries omitted [ref:k_…]]`. The segfault was
+    // inside that fragment. It was retrievable, and nothing in the output
+    // said there was anything worth retrieving.
+    let dir = tempfile::tempdir().unwrap();
+    let payload = reported_training_log();
+    assert!(
+        (340_000..370_000).contains(&payload.len()),
+        "the reported payload was 353,063 chars; this one is {}",
+        payload.len()
+    );
+    let value = compress_explaining(&payload, dir.path());
+    let content = value["content"].as_str().unwrap();
+
+    // The symptom, named exactly as the report named it.
+    assert_eq!(
+        value["explain"]["detection"]["uniform_stream"], true,
+        "the report's `detection.uniform_stream: true`"
+    );
+    for line in [
+        "Fatal Python error: Segmentation fault",
+        "Segmentation fault (core dumped)",
+        "Restarting worker 3 from checkpoint step-2999",
+    ] {
+        assert!(
+            content.contains(line),
+            "{line:?} was inside the fragment and must now be in the output:\n{content}"
+        );
+    }
+    assert!(
+        !content.contains("entries omitted"),
+        "`entries omitted` is the sampler's marker — the report's failure mode:\n{content}"
+    );
+
+    // …and the compression the report measured is substantially kept: 99.84%
+    // became 99.5%, about a kilobyte of the 353.
+    assert!(
+        value["saved_pct"].as_f64().unwrap() > 99.0,
+        "got {}",
+        value["saved_pct"]
+    );
+}

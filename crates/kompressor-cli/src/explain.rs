@@ -84,6 +84,10 @@ pub struct DetectionView {
     pub diagnostics: bool,
     pub untimestamped: bool,
     pub uniform_stream: bool,
+    /// A uniform stream carrying a crash, which routes to the scored log path
+    /// rather than the head-and-tail sampler. Surfaced here because that
+    /// diversion is otherwise invisible: the type still reads `listing`.
+    pub error_signal: bool,
     pub sample_truncated: bool,
 }
 
@@ -101,6 +105,7 @@ impl DetectionView {
             diagnostics: detection.meta.diagnostics,
             untimestamped: detection.meta.untimestamped,
             uniform_stream: detection.meta.uniform_stream,
+            error_signal: detection.meta.error_signal,
             sample_truncated: detection.meta.sample_truncated,
         }
     }
