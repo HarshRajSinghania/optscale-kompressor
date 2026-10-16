@@ -180,6 +180,15 @@ const UNIFORM_MIN_LINES: usize = 50;
 /// which folding already handles better — it keeps one line verbatim instead of
 /// sampling.
 const UNIFORM_MIN_SUFFIX: usize = 3;
+/// The share of a uniform stream's lines that may carry error signal before the
+/// signal is read as part of the template rather than as an event.
+///
+/// A crash is rare by nature: three lines in six thousand. A column named
+/// `error=` is on every line, and diverting such a stream to the scored path
+/// buys nothing — it would keep an arbitrary hundred of them and lose the head
+/// and tail that make a progress log readable. A word on more than a tenth of
+/// the lines belongs to the template.
+const UNIFORM_ERROR_MAX_RATIO: f32 = 0.1;
 
 static CPP_INCLUDE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?m)^\s*#\s*include\s*[<"]"#).unwrap());
@@ -454,8 +463,24 @@ pub fn detect_content_with(content: &str, gutter_aware: bool, tabular_ratio: boo
     // here is machine-generated progress output, sampled verbatim for the same
     // reason a listing is — the varying tail is the entire content of the line.
     if looks_uniform_stream(&body_lines) {
+        // …unless something in the stream went wrong. The sampler keeps a fixed
+        // head and tail and scores nothing, so a crash two thirds of the way
+        // through a training log is elided with the routine lines and the
+        // marker gives no hint it is in there. That is the head/tail failure
+        // mode the log path's scored selection exists to avoid, so hand it over
+        // — it costs about a kilobyte on a payload of this shape.
+        // Summaries are subtracted: `0 tests failed` carries error vocabulary
+        // while reporting that there were none, and counting it diverted a
+        // clean test log. A crash says `Segmentation fault`, not `0 failed`.
+        let errors = body_lines
+            .iter()
+            .filter(|line| crate::logs::is_error_line(line) && !crate::logs::is_summary_line(line))
+            .count();
+        let error_signal =
+            errors > 0 && (errors as f32 / body_lines.len() as f32) <= UNIFORM_ERROR_MAX_RATIO;
         let meta = DetectionMeta {
             uniform_stream: true,
+            error_signal,
             ..Default::default()
         };
         return Detection::with_meta(ContentType::Listing, 0.8, meta);
@@ -843,6 +868,12 @@ pub fn strategy_for(detection: &Detection, opts: &EngineOptions) -> Strategy {
         ContentType::BuildOutput if opts.enable_log_compressor => Strategy::Log,
         ContentType::GitDiff if opts.enable_diff_compressor => Strategy::Diff,
         ContentType::Tabular if opts.enable_tabular_compressor => Strategy::Tabular,
+        // before the sampler, and only for a uniform stream that carries error
+        // signal: the type is still a listing, but the compressor that can see
+        // the error has to be the one that gets it
+        ContentType::Listing if detection.meta.error_signal && opts.enable_log_compressor => {
+            Strategy::Log
+        }
         ContentType::Listing if opts.enable_listing_compressor => Strategy::Listing,
         ContentType::SourceCode if opts.enable_code_aware => Strategy::CodeAware,
         ContentType::Config if opts.enable_config_compressor => Strategy::Config,
@@ -851,5 +882,91 @@ pub fn strategy_for(detection: &Detection, opts: &EngineOptions) -> Strategy {
         // for what that does and does not claim.
         ContentType::Html if opts.enable_html_compressor => Strategy::Log,
         _ => Strategy::Passthrough,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A uniform progress stream, optionally interrupted at step 3000.
+    fn training_log(interruption: &[&str]) -> String {
+        let mut lines: Vec<String> = vec!["Loading dataset /data/train.jsonl".to_string()];
+        for step in 1..=6000 {
+            lines.push(format!(
+                "epoch 1 step {step}/6000 loss=1.8520 lr=0.000300 tok/s=50000"
+            ));
+            if step == 3000 {
+                lines.extend(interruption.iter().map(|line| (*line).to_string()));
+            }
+        }
+        lines.push("Training complete".to_string());
+        lines.join("\n")
+    }
+
+    fn routed(content: &str) -> (Detection, Strategy) {
+        let opts = EngineOptions::default();
+        let detection = detect_result(content, "tool", &opts);
+        let strategy = strategy_for(&detection, &opts);
+        (detection, strategy)
+    }
+
+    #[test]
+    fn a_crash_inside_a_uniform_stream_goes_to_the_scored_path() {
+        // The sampler keeps a fixed head and tail and scores nothing, so a
+        // crash two thirds of the way through is elided with the routine lines
+        // and the marker gives no hint it is in there.
+        let (detection, strategy) = routed(&training_log(&[
+            "Segmentation fault (core dumped)",
+            "Received signal 11 SIGSEGV, address not mapped to object",
+            "Restarting worker 3 from checkpoint step-2999",
+        ]));
+        assert!(detection.meta.uniform_stream, "still a uniform stream");
+        assert!(detection.meta.error_signal, "and it carries a crash");
+        assert_eq!(strategy, Strategy::Log, "so the scorer gets it");
+    }
+
+    #[test]
+    fn a_clean_uniform_stream_still_goes_to_the_sampler() {
+        // The diversion must not cost a clean progress log its head and tail.
+        let (detection, strategy) = routed(&training_log(&[]));
+        assert!(detection.meta.uniform_stream);
+        assert!(!detection.meta.error_signal, "nothing went wrong in it");
+        assert_eq!(strategy, Strategy::Listing);
+    }
+
+    #[test]
+    fn a_metric_named_error_is_part_of_the_template_not_an_event() {
+        // `error=` on every line is a column, not a crash. Diverting such a
+        // stream buys nothing and loses the head and tail that make it
+        // readable, so the rarity gate must hold it on the sampler.
+        let mut lines: Vec<String> = Vec::new();
+        for step in 1..=6000 {
+            lines.push(format!(
+                "epoch 1 step {step}/6000 loss=1.8520 error=0.0031 tok/s=50000"
+            ));
+        }
+        let (detection, strategy) = routed(&lines.join("\n"));
+        assert!(detection.meta.uniform_stream);
+        assert!(
+            !detection.meta.error_signal,
+            "a word on every line belongs to the template"
+        );
+        assert_eq!(strategy, Strategy::Listing);
+    }
+
+    #[test]
+    fn a_summary_reporting_no_failures_is_not_an_error() {
+        // `0 tests failed` carries error vocabulary while announcing the
+        // absence of errors. Counting it diverted a clean test log.
+        let (detection, strategy) = routed(&training_log(&[
+            "0 tests failed",
+            "0 tests not started (parent test skipped or failed)",
+        ]));
+        assert!(
+            !detection.meta.error_signal,
+            "a summary of absence is not an event"
+        );
+        assert_eq!(strategy, Strategy::Listing);
     }
 }

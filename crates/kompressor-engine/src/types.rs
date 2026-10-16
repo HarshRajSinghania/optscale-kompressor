@@ -228,6 +228,12 @@ pub struct DetectionMeta {
     pub diagnostics: bool,
     pub untimestamped: bool,
     pub uniform_stream: bool,
+    /// A uniform stream that nevertheless carries error signal, and so must be
+    /// routed to the compressor that scores errors rather than the one that
+    /// samples head and tail. Set only on the uniform-stream path, which is
+    /// where a crash in the middle of a progress log was being elided with no
+    /// hint it had happened.
+    pub error_signal: bool,
     pub language: Option<Language>,
     pub flavor: Option<ConfigFlavor>,
     pub skipped_size: bool,

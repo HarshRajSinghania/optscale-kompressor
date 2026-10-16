@@ -508,8 +508,18 @@ fn route_whole(
         ),
         None => {
             let detection = detect_result(content, role, opts);
-            let kind = detection.content_type.kind();
             let strategy = strategy_for(&detection, opts);
+            // A uniform stream diverted to the scored path because it carries a
+            // crash reports what ran, not what it was detected as. The type is
+            // still `listing` and that is what detection records; a route that
+            // reported `listing` here would be unmeasurable in analytics, and
+            // the whole point of the diversion is being able to see how often
+            // it fires.
+            let kind = if detection.meta.error_signal && strategy == Strategy::Log {
+                Kind::Log
+            } else {
+                detection.content_type.kind()
+            };
             let out = match strategy {
                 Strategy::SmartCrusher => guarded(|| crush_json(content, opts, ctx, refs)),
                 Strategy::Log => {

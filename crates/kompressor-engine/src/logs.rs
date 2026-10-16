@@ -554,9 +554,46 @@ fn fold_templates(
     Some(join_lines(&rebuilt))
 }
 
+/// What counts as an error line.
+///
+/// The second group is there because a native crash announces itself without
+/// ever saying "error": `Segmentation fault (core dumped)` and a bare `SIGSEGV`
+/// carry none of the first group's words, so a process that died hard scored
+/// 0.1 — the same as a routine progress line — and was dropped out of the
+/// middle of a log while the marker reported `0 ERROR`. A Python-wrapped
+/// segfault was kept only because CPython prefixes it with `Fatal Python
+/// error:`, which is an accident of that runtime and not a property of crashes.
+///
+/// Deliberately absent: a bare `killed`, which is the OOM killer's word but
+/// also ordinary process-management vocabulary. `out of memory` and
+/// `oom-killed` catch the case that matters without claiming every line that
+/// mentions killing something.
 static ERROR: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|critical)\b").unwrap()
+    Regex::new(
+        r"(?i)\b(?:error|fail(?:ed|ure)?|fatal|panic|exception|critical|segfault|segmentation\s+fault|core\s+dumped|sig(?:segv|abrt|bus|ill|fpe)|double\s+free|stack\s+smashing|out\s+of\s+memory|oom[-_]?kill(?:ed|er)?|terminate\s+called|aborted)\b",
+    )
+    .unwrap()
 });
+
+/// Whether a line carries error signal, by the one definition in this crate.
+///
+/// Exposed so detection can ask the question without growing a second copy of
+/// the vocabulary: two derivations of one value diverge, and this one decides
+/// both what the log path keeps and what the detector routes here at all.
+pub(crate) fn is_error_line(line: &str) -> bool {
+    ERROR.is_match(line)
+}
+
+/// Whether a line is the log reporting an outcome rather than being one.
+///
+/// Routing consults this to subtract summaries from its error count. A test
+/// log's `0 tests failed` carries error vocabulary while announcing the
+/// absence of errors, and counting it diverted a clean OCaml testsuite run to
+/// the scored path. An event buried mid-stream — a crash — carries error
+/// vocabulary and no summary vocabulary, which is the case routing exists for.
+pub(crate) fn is_summary_line(line: &str) -> bool {
+    SUMMARY.is_match(line)
+}
 static WARN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bwarn(?:ing)?\b").unwrap());
 static SUMMARY: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)\b(?:summary|passed|failed|total|result|complete(?:d)?)\b").unwrap()
@@ -662,13 +699,24 @@ fn crush_scored(lines: &[&str], opts: &EngineOptions, refs: &mut RefCollector) -
 
     let errors = omitted.iter().filter(|line| ERROR.is_match(line)).count();
     let warnings = omitted.iter().filter(|line| WARN.is_match(line)).count();
-    let marker = omission_marker(
-        "log",
-        omitted.len(),
-        &join_lines(&omitted),
-        refs,
-        &format!("; {errors} ERROR, {warnings} WARN"),
-    );
+    // `0 ERROR, 0 WARN` is two different statements and only one of them is
+    // supported. When the payload carried error or warning vocabulary, the
+    // scorer looked, found it, and kept it, so zero in the omitted span means
+    // "nothing wrong went behind the handle" — worth saying. When the selection
+    // was driven by summary lines alone, the scorer never had error vocabulary
+    // to exercise, and the same `0 ERROR` asserts the span is clean when all it
+    // knows is that nothing matched words it recognises. A bare
+    // `Segmentation fault (core dumped)` read as clean on exactly that path.
+    // An absent claim is honest; a zero is not.
+    let vocabulary_exercised = lines
+        .iter()
+        .any(|line| ERROR.is_match(line) || WARN.is_match(line));
+    let note = if vocabulary_exercised {
+        format!("; {errors} ERROR, {warnings} WARN")
+    } else {
+        String::new()
+    };
+    let marker = omission_marker("log", omitted.len(), &join_lines(&omitted), refs, &note);
     let mut out = join_lines(&kept);
     if !kept.is_empty() {
         out.push('\n');
@@ -1463,5 +1511,105 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A six-thousand-step training log whose worker dies two thirds of the
+    /// way through. `crash` is the three lines that announce it.
+    fn training_log_with(crash: &[&str]) -> String {
+        let mut lines: Vec<String> = vec!["Loading dataset /data/train.jsonl".to_string()];
+        for step in 1..=6000 {
+            lines.push(format!(
+                "epoch 1 step {step}/6000 loss=1.8520 lr=0.000300 tok/s=50000"
+            ));
+            if step == 3000 {
+                lines.extend(crash.iter().map(|line| (*line).to_string()));
+            }
+        }
+        lines.push("Training complete".to_string());
+        join_lines(&lines)
+    }
+
+    #[test]
+    fn a_native_crash_survives_the_scored_path_without_a_python_header() {
+        // `Fatal Python error:` would match on `fatal` and on `error`, so a
+        // CPython-wrapped segfault was always kept. A process that dies under
+        // any other runtime says none of those words, and was dropped out of
+        // the middle of the log while the marker reported `0 ERROR`.
+        let content = training_log_with(&[
+            "Segmentation fault (core dumped)",
+            "Received signal 11 SIGSEGV, address not mapped to object",
+            "Restarting worker 3 from checkpoint step-2999",
+        ]);
+        let mut refs = recoverable();
+        let out = crush_log(
+            &content,
+            &options(Mode::Recoverable, 5),
+            &ctx(),
+            &mut refs,
+            Identity::Values,
+        )
+        .expect("6000 lines score");
+
+        assert!(
+            out.contains("Segmentation fault (core dumped)"),
+            "the crash must survive, got {out:?}"
+        );
+        assert!(
+            out.contains("SIGSEGV"),
+            "the signal line must survive, got {out:?}"
+        );
+        assert_no_orphan_refs(&out, &refs);
+    }
+
+    #[test]
+    fn the_marker_makes_no_error_claim_when_it_had_no_error_vocabulary() {
+        // `0 ERROR, 0 WARN` over a span the scorer never searched for errors is
+        // a claim it cannot support: it means "nothing matched words I know",
+        // and it reads as "nothing is wrong in here". Only a payload that
+        // exercised the vocabulary earns the count.
+        let lines: Vec<String> = (0..200)
+            .map(|index| format!("tick {index} of the shelf inventory"))
+            .chain(std::iter::once("Summary: 200 ticks".to_string()))
+            .collect();
+        let content = join_lines(&lines);
+        let mut refs = recoverable();
+        let out = crush_scored(
+            &split_lines(&content),
+            &options(Mode::Recoverable, 5),
+            &mut refs,
+        )
+        .expect("the summary line scores");
+
+        assert!(out.contains("omitted"), "it must still omit, got {out:?}");
+        assert!(
+            !out.contains("ERROR"),
+            "no error vocabulary was exercised, so the marker must not count \
+             errors it never looked for: {out:?}"
+        );
+    }
+
+    #[test]
+    fn the_marker_still_reports_counts_when_the_vocabulary_was_exercised() {
+        // The other half of the rule: when the payload did carry error words,
+        // the scorer found them and kept them, so a zero in the omitted span
+        // means "nothing wrong went behind the handle" and is worth saying.
+        let content = training_log_with(&[
+            "Fatal Python error: Segmentation fault",
+            "Segmentation fault (core dumped)",
+            "Restarting worker 3 from checkpoint step-2999",
+        ]);
+        let mut refs = recoverable();
+        let out = crush_log(
+            &content,
+            &options(Mode::Recoverable, 5),
+            &ctx(),
+            &mut refs,
+            Identity::Values,
+        )
+        .expect("6000 lines score");
+        assert!(
+            out.contains("ERROR, ") && out.contains(" WARN]"),
+            "the count is supported here and must be reported, got {out:?}"
+        );
     }
 }
